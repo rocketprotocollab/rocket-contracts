@@ -37,3 +37,18 @@ After the FairMint deadline, anyone can send 0.0005 ETH to token address to add 
 After LP added, send 0.0002 ETH to the token address to claim remaining ETH.
 This process incurs no fees, and the 0.0002 ETH sent will also be refunded.
 
+## Install 
+
+1. Install OpenZeppelin Libs:
+
+```
+forge install OpenZeppelin/openzeppelin-contracts@v5.0.2
+```
+
+2. Run tests
+
+```
+forge test
+```
+
+
