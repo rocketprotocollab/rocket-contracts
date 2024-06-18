@@ -14,7 +14,7 @@ contract LP is ERC20 {
     constructor() ERC20("LP", "LP") {}
 
     function mint(address to, uint256 amount) public {
-        _mint(to, amount);
+        _update(address(0), to, amount);
     }
 
     // transfer
@@ -75,7 +75,7 @@ contract UniswapRouterMock is IUniswapV2Router02 {
     {
         // transfer token to message sender
         LP lpToken = LP(factory.getPair(token, address(1)));
-        lpToken.mint(msg.sender, 10000 * 10 ** 18);
+        lpToken.mint(to, 10000 * 10 ** 18);
         return (0, 0, 0);
     }
 }
