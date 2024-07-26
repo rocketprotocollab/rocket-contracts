@@ -70,9 +70,6 @@ interface INonfungiblePositionManager {
 
     function refundETH() external payable;
 
-    // function multicall(
-    //     bytes[] calldata data
-    // ) external payable returns (bytes[] memory results);
 }
 
 contract FairLaunchLimitBlockTokenV3 is
@@ -89,6 +86,9 @@ contract FairLaunchLimitBlockTokenV3 is
     // send 0.0002 ether to the contract address to refund all ethers
     uint256 public constant REFUND_COMMAND = 0.0002 ether;
 
+    // claim command
+    // after start, you can claim extra eth
+    // send 0.0002 ether to the contract address to claim extra eth
     uint256 public constant CLAIM_COMMAND = 0.0002 ether;
 
     // start trading command
@@ -133,7 +133,8 @@ contract FairLaunchLimitBlockTokenV3 is
 
     // refund fee to
     address public immutable refundFeeTo;
-
+    
+    // is address claimed extra eth
     mapping(address => bool) public claimed;
 
     // recipient must be a contract address of IUniLocker
@@ -142,7 +143,7 @@ contract FairLaunchLimitBlockTokenV3 is
     // feePool
     uint24 public immutable poolFee;
 
-    // project owner
+    // project owner, whill receive the locked lp
     address public immutable projectOwner;
 
     constructor(
@@ -183,6 +184,7 @@ contract FairLaunchLimitBlockTokenV3 is
             tx.origin == msg.sender,
             "FairMint: can not send command from contract."
         );
+
         if (started) {
             // after started
             if (msg.value == MINT_COMMAND) {
@@ -240,7 +242,6 @@ contract FairLaunchLimitBlockTokenV3 is
         require(started, "FairMint: withdraw extra eth must after start");
         require(softTopCap > 0, "FairMint: soft top cap must be set");
         require(totalEthers > softTopCap, "FairMint: no extra eth");
-        require(msg.value == CLAIM_COMMAND, "FairMint: value not match");
 
         uint256 extra = totalEthers - softTopCap;
         uint256 fundAmount = fundBalanceOf[msg.sender];
@@ -279,7 +280,6 @@ contract FairLaunchLimitBlockTokenV3 is
     }
 
     function _refund() private nonReentrant {
-        require(msg.value == REFUND_COMMAND, "FairMint: value not match");
         require(!started, "FairMint: already started");
 
         address account = msg.sender;
@@ -305,7 +305,6 @@ contract FairLaunchLimitBlockTokenV3 is
 
     function _mintToken() private nonReentrant {
         require(started, "FairMint: not started");
-        require(msg.value == MINT_COMMAND, "FairMint: value not match");
         require(msg.sender == tx.origin, "FairMint: can not mint to contract.");
         require(!minted[msg.sender], "FairMint: already minted");
 
@@ -345,7 +344,6 @@ contract FairLaunchLimitBlockTokenV3 is
             ? softTopCap < totalEthers ? softTopCap : totalEthers
             : totalEthers;
 
-        // set started
         _approve(
             address(this),
             uniswapPositionManager,
@@ -377,12 +375,10 @@ contract FairLaunchLimitBlockTokenV3 is
         started = true;
 
         emit LaunchEvent(address(this), _amount0, _amount1, liquidity);
-        // refundETH
         _positionManager.refundETH();
 
         // lock lp into contract forever
         if (locker != address(0)) {
-            // 需要授权给lock合约
             IERC721(uniswapPositionManager).approve(locker, tokenId);
             IUniLocker _locker = IUniLocker(locker);
             uint256 _lockId = _locker.lock(
@@ -469,13 +465,9 @@ contract FairLaunchLimitBlockTokenV3 is
     ) internal pure returns (uint160) {
         require(amount0 > 0 && amount1 > 0, "Amounts must be greater than 0");
 
-        // Calculate the price ratio
-        uint256 price = (amount1 * 1e18) / amount0; // Scaling by 1e18 for precision
-        // Calculate the square root of the price ratio
+        uint256 price = (amount1 * 1e18) / amount0; 
         uint256 sqrtPrice = price.sqrt();
-        // Scale by 2^96
-        uint256 sqrtPriceX96Full = (sqrtPrice << 96) / 1e9; // Adjust scaling factor
-        // Return the result as uint160
+        uint256 sqrtPriceX96Full = (sqrtPrice << 96) / 1e9; 
         return uint160(sqrtPriceX96Full);
     }
 }
