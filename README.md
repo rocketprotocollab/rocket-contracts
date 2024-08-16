@@ -1,4 +1,7 @@
 # Rocket Protocol
+
+[Audit report by Cyberscope](https://github.com/rocketprotocollab/rocket-contracts/blob/main/audit/cyberscope.pdf)
+
 Rocket Protocol is a fair launch protocol for MEME tokens.
 
 Tokens created using Rocket Protocol come with FairMint features and offer the following advantages:
