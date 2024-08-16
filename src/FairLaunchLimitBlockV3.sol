@@ -375,7 +375,7 @@ contract FairLaunchLimitBlockTokenV3 is
         started = true;
 
         emit LaunchEvent(address(this), _amount0, _amount1, liquidity);
-        _positionManager.refundETH();
+        // _positionManager.refundETH(); // dumplia
 
         // lock lp into contract forever
         if (locker != address(0)) {
@@ -406,8 +406,8 @@ contract FairLaunchLimitBlockTokenV3 is
                 token0: token0,
                 token1: token1,
                 fee: poolFee,
-                tickLower: -887250,
-                tickUpper: 887250,
+                tickLower: -887220,
+                tickUpper: 887220,
                 amount0Desired: amount0,
                 amount1Desired: amount1,
                 amount0Min: (amount0 * 98) / 100,
