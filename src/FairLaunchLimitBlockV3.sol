@@ -32,6 +32,10 @@ interface IUniswapV3Factory {
     ) external returns (address pool);
 }
 
+interface IFactory {
+    function owner() external view returns (address);
+}
+
 interface INonfungiblePositionManager {
     function WETH9() external pure returns (address);
 
@@ -69,7 +73,6 @@ interface INonfungiblePositionManager {
     ) external payable returns (address pool);
 
     function refundETH() external payable;
-
 }
 
 contract FairLaunchLimitBlockTokenV3 is
@@ -129,11 +132,11 @@ contract FairLaunchLimitBlockTokenV3 is
     uint256 public immutable softTopCap;
 
     // refund fee rate
-    uint256 public immutable refundFeeRate;
+    uint256 public refundFeeRate;
 
     // refund fee to
     address public immutable refundFeeTo;
-    
+
     // is address claimed extra eth
     mapping(address => bool) public claimed;
 
@@ -145,6 +148,22 @@ contract FairLaunchLimitBlockTokenV3 is
 
     // project owner, whill receive the locked lp
     address public immutable projectOwner;
+
+    // fair launch factory
+    address public immutable factory;
+
+    // weth
+    address public immutable weth;
+
+    // launchfeerate 0.3%
+    uint256 public constant launchFeeRate = 30;
+
+    //
+    uint256 public constant maxFundLimit = 10 ether;
+
+    int24 public immutable tickLower;
+
+    int24 public immutable tickUpper;
 
     constructor(
         address _locker,
@@ -173,13 +192,46 @@ contract FairLaunchLimitBlockTokenV3 is
         projectOwner = _projectOwner;
 
         poolFee = _poolFee;
+        factory = msg.sender;
+
+        tickLower = block.chainid == 56 || block.chainid == 97
+            ? -887250
+            : -887220;
+        tickUpper = block.chainid == 56 || block.chainid == 97
+            ? int24(887250)
+            : int24(887220);
+
+        weth = INonfungiblePositionManager(uniswapPositionManager).WETH9();
+
+        (address token0, address token1) = address(this) < weth
+            ? (address(this), weth)
+            : (weth, address(this));
+
+        (uint256 amount0, uint256 amount1) = address(this) < weth
+            ? (totalDispatch / 2, softTopCap)
+            : (softTopCap, totalDispatch / 2);
+
+        uint160 sqrtPriceX96 = getSqrtPriceX96(amount0, amount1);
+        INonfungiblePositionManager(uniswapPositionManager)
+            .createAndInitializePoolIfNecessary(
+                token0,
+                token1,
+                poolFee,
+                sqrtPriceX96
+            );
+    }
+
+    // clear refund fee
+    function clearRefundFee() public {
+        IFactory _factory = IFactory(factory);
+        require(msg.sender == _factory.owner(), "FairMint: only owner");
+        refundFeeRate = 0;
     }
 
     receive() external payable noDelegateCall {
         if (msg.sender == uniswapPositionManager) {
             return;
         }
-
         require(
             tx.origin == msg.sender,
             "FairMint: can not send command from contract."
@@ -220,38 +272,39 @@ contract FairLaunchLimitBlockTokenV3 is
     }
 
     function canStart() public view returns (bool) {
-        // return block.number >= untilBlockNumber || totalEthers >= softTopCap;
-        // eth balance of this contract is more than zero
         return block.number >= untilBlockNumber;
     }
 
     // get extra eth
     function getExtraETH(address _addr) public view returns (uint256) {
-        if (totalEthers > softTopCap) {
-            uint256 claimAmount = (fundBalanceOf[_addr] *
-                (totalEthers - softTopCap)) / totalEthers;
+        uint256 left = totalEthers - _getFee(totalEthers);
+        if (left > softTopCap) {
+            // 0.001 * （left - softTopCap） / left
+            uint256 claimAmount = fundBalanceOf[_addr] * (left - softTopCap) /
+                totalEthers;
             return claimAmount;
         }
         return 0;
     }
 
+    function _getFee(uint256 amount) private pure returns (uint256) {
+        return (amount * launchFeeRate) / 10000;
+    }
+
     // claim extra eth
     function _claimExtraETH() private nonReentrant {
-        // if the eth balance of this contract is more than soft top cap, withdraw it
         // must after start
         require(started, "FairMint: withdraw extra eth must after start");
         require(softTopCap > 0, "FairMint: soft top cap must be set");
         require(totalEthers > softTopCap, "FairMint: no extra eth");
 
-        uint256 extra = totalEthers - softTopCap;
         uint256 fundAmount = fundBalanceOf[msg.sender];
         require(fundAmount > 0, "FairMint: no fund");
 
         require(!claimed[msg.sender], "FairMint: already claimed");
         claimed[msg.sender] = true;
 
-        uint256 claimAmount = (fundAmount * extra) / totalEthers;
-
+        uint256 claimAmount = getExtraETH(msg.sender);
         // send to msg sender
         (bool success, ) = msg.sender.call{value: claimAmount + CLAIM_COMMAND}(
             ""
@@ -274,6 +327,11 @@ contract FairLaunchLimitBlockTokenV3 is
         // require msg.value > 0.0001 ether
         require(!started, "FairMint: already started");
         require(msg.value >= MINIMAL_FUND, "FairMint: value too low");
+        // each account can only fund 10 ethers
+        require(
+            fundBalanceOf[msg.sender] + msg.value <= maxFundLimit,
+            "FairMint: fund limit reached"
+        );
         fundBalanceOf[msg.sender] += msg.value;
         totalEthers += msg.value;
         emit FundEvent(msg.sender, msg.value, 0);
@@ -287,7 +345,7 @@ contract FairLaunchLimitBlockTokenV3 is
         require(amount > 0, "FairMint: no fund");
         fundBalanceOf[account] = 0;
         totalEthers -= amount;
-        
+
         uint256 fee = (amount * refundFeeRate) / 10000;
         assert(fee < amount);
 
@@ -327,22 +385,12 @@ contract FairLaunchLimitBlockTokenV3 is
                 uniswapPositionManager
             );
 
-        address _weth = _positionManager.WETH9();
-
-        address _poolAddress = IUniswapV3Factory(uniswapFactory).getPool(
-            address(this),
-            _weth,
-            poolFee
-        );
-
-        require(
-            _poolAddress == address(0),
-            "FairMint: pool already exists, can not start, please refund"
-        );
+        uint256 fee = _getFee(totalEthers);
+        uint256 left = totalEthers - fee;
 
         uint256 totalAdd = softTopCap > 0
-            ? softTopCap < totalEthers ? softTopCap : totalEthers
-            : totalEthers;
+            ? softTopCap < left ? softTopCap : left
+            : left;
 
         _approve(
             address(this),
@@ -351,32 +399,47 @@ contract FairLaunchLimitBlockTokenV3 is
             false
         );
 
-        (
-            address token0,
-            address token1,
-            uint256 amount0,
-            uint256 amount1,
+        (address token0, address token1) = address(this) < weth
+            ? (address(this), weth)
+            : (weth, address(this));
 
-        ) = _initPool(_weth, totalAdd, _positionManager);
+        (uint256 amount0, uint256 amount1) = address(this) < weth
+            ? (totalDispatch / 2, totalAdd)
+            : (totalAdd, totalDispatch / 2);
+
+        INonfungiblePositionManager.MintParams memory params = INonfungiblePositionManager
+            .MintParams({
+                token0: token0,
+                token1: token1,
+                fee: poolFee,
+                tickLower: tickLower, 
+                tickUpper: tickUpper, 
+                amount0Desired: amount0,
+                amount1Desired: amount1,
+                amount0Min: weth == token0 ? (amount0 * 9800) / 10000 : 0,
+                amount1Min: weth == token1 ? (amount1 * 9800) / 10000 : 0,
+                recipient: locker == address(0) ? address(0) : address(this),
+                deadline: block.timestamp + 1 hours
+            });
 
         (
             uint256 tokenId,
             uint128 liquidity,
             uint256 _amount0,
             uint256 _amount1
-        ) = _mintLiquidity(
-                _positionManager,
-                token0,
-                token1,
-                amount0,
-                amount1,
-                totalAdd
-            );
+        ) = _positionManager.mint{value: totalAdd}(params);
+
+        _positionManager.refundETH();
         started = true;
 
-        emit LaunchEvent(address(this), _amount0, _amount1, liquidity);
-        // _positionManager.refundETH(); // dumplia
+        // drop all of the rest tokens to zero
+        if (
+            IERC20(address(this)).balanceOf(address(this)) > totalDispatch / 2
+        ) {
+            _burn(address(this), balanceOf(address(this)) - totalDispatch / 2);
+        }
 
+        emit LaunchEvent(address(this), _amount0, _amount1, liquidity);
         // lock lp into contract forever
         if (locker != address(0)) {
             IERC721(uniswapPositionManager).approve(locker, tokenId);
@@ -389,74 +452,29 @@ contract FairLaunchLimitBlockTokenV3 is
             IERC721(locker).transferFrom(address(this), projectOwner, _lockId);
         }
 
+        // split fee : refundAddress 0.1% , projectOwner 0.2%
+        if (fee > 0) {
+            (bool success1, ) = refundFeeTo.call{value: totalEthers / 1000}("");
+            require(success1, "FairMint: refund fee failed");
+
+            (bool success2, ) = projectOwner.call{
+                value: (totalEthers * 2) / 1000
+            }("");
+            require(success2, "FairMint: project fee failed");
+        }
+
+        // mint token
         (bool success, ) = msg.sender.call{value: START_COMMAND}("");
         require(success, "FairMint: mint failed");
     }
 
-    function _mintLiquidity(
-        INonfungiblePositionManager _positionManager,
-        address token0,
-        address token1,
-        uint256 amount0,
-        uint256 amount1,
-        uint256 totalAdd
-    ) private returns (uint256, uint128, uint256, uint256) {
-        INonfungiblePositionManager.MintParams
-            memory params = INonfungiblePositionManager.MintParams({
-                token0: token0,
-                token1: token1,
-                fee: poolFee,
-                tickLower: -887220,
-                tickUpper: 887220,
-                amount0Desired: amount0,
-                amount1Desired: amount1,
-                amount0Min: (amount0 * 98) / 100,
-                amount1Min: (amount1 * 98) / 100,
-                recipient: locker == address(0) ? address(0) : address(this),
-                deadline: block.timestamp + 1 hours
-            });
-
-        (
-            uint256 _tokenId,
-            uint128 _liquidity,
-            uint256 _amount0,
-            uint256 _amount1
-        ) = _positionManager.mint{value: totalAdd}(params);
-        _positionManager.refundETH();
-
-        return (_tokenId, _liquidity, _amount0, _amount1);
-    }
-
-    function _initPool(
-        address _weth,
-        uint256 totalAdd,
-        INonfungiblePositionManager _positionManager
-    )
-        private
-        returns (
-            address token0,
-            address token1,
-            uint256 amount0,
-            uint256 amount1,
-            uint160 sqrtPriceX96
-        )
-    {
-        (token0, token1) = address(this) < _weth
-            ? (address(this), _weth)
-            : (_weth, address(this));
-
-        (amount0, amount1) = address(this) < _weth
-            ? (totalDispatch / 2, totalAdd)
-            : (totalAdd, totalDispatch / 2);
-
-        sqrtPriceX96 = getSqrtPriceX96(amount0, amount1);
-
-        _positionManager.createAndInitializePoolIfNecessary(
-            token0,
-            token1,
-            poolFee,
-            sqrtPriceX96
-        );
+    function _update(
+        address from,
+        address to,
+        uint256 value
+    ) internal override {
+        require(value > 0, "ERC20: transfer from the zero address");
+        super._update(from, to, value);
     }
 
     function getSqrtPriceX96(
@@ -465,9 +483,9 @@ contract FairLaunchLimitBlockTokenV3 is
     ) internal pure returns (uint160) {
         require(amount0 > 0 && amount1 > 0, "Amounts must be greater than 0");
 
-        uint256 price = (amount1 * 1e18) / amount0; 
+        uint256 price = (amount1 * 1e18) / amount0;
         uint256 sqrtPrice = price.sqrt();
-        uint256 sqrtPriceX96Full = (sqrtPrice << 96) / 1e9; 
+        uint256 sqrtPriceX96Full = (sqrtPrice << 96) / 1e9;
         return uint160(sqrtPriceX96Full);
     }
 }
